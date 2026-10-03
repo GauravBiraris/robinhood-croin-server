@@ -146,6 +146,108 @@ app.post('/api/decisions', authenticateToken, async (req, res) => {
   }
 });
 
+// 7. Settle Module: Validate Access and Identify Role
+app.get('/api/settle/validate/:creditId', authenticateToken, async (req, res) => {
+  const { creditId } = req.params;
+  const { adminAddress } = req.query;
+  const userAddress = req.user.address.toLowerCase();
+
+  try {
+    const creditRes = await pool.query('SELECT * FROM credits WHERE credit_id = $1', [creditId]);
+    if (creditRes.rows.length === 0) return res.status(404).json({ error: 'Credit ID not found.' });
+    
+    const credit = creditRes.rows[0];
+    let role = null;
+
+    if (userAddress === credit.creditor.toLowerCase()) role = 'Creditor';
+    else if (userAddress === credit.debitor.toLowerCase()) role = 'Debitor';
+    else if (adminAddress && userAddress === adminAddress.toLowerCase()) role = 'Admin';
+    else {
+      // Check if trustee
+      const ballotRes = await pool.query(
+        'SELECT * FROM ballots WHERE ballotin_id = $1 AND LOWER(wallet_address) = $2',
+        [credit.ballotin_id, userAddress]
+      );
+      if (ballotRes.rows.length > 0) role = 'Trustee';
+    }
+
+    if (!role) {
+      return res.status(403).json({ error: 'You have nothing to do with this credit.' });
+    }
+
+    // Check if chat exists (at least one message)
+    const chatCheck = await pool.query('SELECT COUNT(*) FROM chats WHERE credit_id = $1', [creditId]);
+    const chatExists = parseInt(chatCheck.rows[0].count) > 0;
+
+    res.json({ role, chatExists, credit });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database verification failed' });
+  }
+});
+
+// 8. Settle Module: Fetch Chat History
+app.get('/api/settle/chat/:creditId', authenticateToken, async (req, res) => {
+  const { creditId } = req.params;
+  try {
+    const chatRes = await pool.query('SELECT * FROM chats WHERE credit_id = $1 ORDER BY timestamp ASC', [creditId]);
+    res.json(chatRes.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch chat' });
+  }
+});
+
+// 9. Settle Module: Initialize Chat (Only Debitor)
+app.post('/api/settle/chat/init', authenticateToken, async (req, res) => {
+  const { creditId } = req.body;
+  const userAddress = req.user.address.toLowerCase();
+
+  try {
+    const creditRes = await pool.query('SELECT * FROM credits WHERE credit_id = $1', [creditId]);
+    if (creditRes.rows.length === 0) return res.status(404).json({ error: 'Credit not found' });
+    
+    const credit = creditRes.rows[0];
+    if (userAddress !== credit.debitor.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the debitor can start the settlement' });
+    }
+
+    // Insert first message: Sent by Creditor, containing the terms, timestamped at credit creation
+    const query = `
+      INSERT INTO chats (credit_id, sender, sender_role, message, timestamp) 
+      VALUES ($1, $2, $3, $4, $5) RETURNING *;
+    `;
+    await pool.query(query, [
+      creditId, 
+      credit.creditor.toLowerCase(), 
+      'Creditor', 
+      credit.terms, 
+      credit.created_at
+    ]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 10. Settle Module: Post New Message
+app.post('/api/settle/chat/message', authenticateToken, async (req, res) => {
+  const { creditId, message, role } = req.body;
+  const userAddress = req.user.address.toLowerCase();
+
+  try {
+    const query = `
+      INSERT INTO chats (credit_id, sender, sender_role, message) 
+      VALUES ($1, $2, $3, $4) RETURNING *;
+    `;
+    const result = await pool.query(query, [creditId, userAddress, role, message]);
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Croin Backend running on port ${PORT}`);

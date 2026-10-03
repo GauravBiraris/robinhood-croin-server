@@ -98,6 +98,54 @@ app.get('/api/credits/history', authenticateToken, async (req, res) => {
   }
 });
 
+// 5. Validate Trustee for a Credit (Determine Module)
+app.get('/api/determine/validate/:creditId', authenticateToken, async (req, res) => {
+  const { creditId } = req.params;
+  const userAddress = req.user.address;
+
+  try {
+    // A. Find the credit to get the ballotin_id
+    const creditRes = await pool.query('SELECT * FROM credits WHERE credit_id = $1', [creditId]);
+    if (creditRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Credit ID not found in database.' });
+    }
+    const credit = creditRes.rows[0];
+
+    // B. Check if the user is a trustee in the ballots table for that ballotin_id
+    const ballotRes = await pool.query(
+      'SELECT * FROM ballots WHERE ballotin_id = $1 AND LOWER(wallet_address) = $2',
+      [credit.ballotin_id, userAddress.toLowerCase()]
+    );
+    
+    if (ballotRes.rows.length === 0) {
+      return res.status(403).json({ error: 'Access Denied: You are not a registered trustee for this Ballotin.' });
+    }
+
+    res.json(credit);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database verification failed' });
+  }
+});
+
+// 6. Save Vote Decision (Determine Module)
+app.post('/api/decisions', authenticateToken, async (req, res) => {
+  const { creditId, decision, reason } = req.body;
+  const userAddress = req.user.address;
+
+  try {
+    const query = `
+      INSERT INTO decisions (wallet_address, credit_id, decision, reason) 
+      VALUES ($1, $2, $3, $4) RETURNING *;
+    `;
+    const result = await pool.query(query, [userAddress.toLowerCase(), creditId, decision, reason]);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Croin Backend running on port ${PORT}`);

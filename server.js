@@ -248,6 +248,34 @@ app.post('/api/settle/chat/message', authenticateToken, async (req, res) => {
   }
 });
 
+// 11. Actuate Module: Verify Ticker Status
+app.get('/api/actuate/ticker/:address', authenticateToken, async (req, res) => {
+  const { address } = req.params;
+  try {
+    const result = await pool.query('SELECT * FROM tickers WHERE LOWER(wallet_address) = $1', [address.toLowerCase()]);
+    res.json({ isTicker: result.rows.length > 0 });
+  } catch (error) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 12. Actuate Module: Settle Credit & Wipe
+app.post('/api/actuate/complete', authenticateToken, async (req, res) => {
+  const { creditId, decision } = req.body;
+  try {
+    const query = `
+      UPDATE credits 
+      SET status = 'Settled', decision = $1, wiped = TRUE, delete_date = CURRENT_TIMESTAMP 
+      WHERE credit_id = $2 RETURNING *;
+    `;
+    const result = await pool.query(query, [decision, creditId]);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Croin Backend running on port ${PORT}`);
